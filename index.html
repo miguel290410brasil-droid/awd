@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Controle PS4 3D Interativo</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #222; }
+        canvas { display: block; }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-family: monospace;
+            background: rgba(0,0,0,0.5);
+            padding: 10px;
+            border-radius: 5px;
+            z-index: 100;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        Conecte seu controle de PS4 e mova-o! <br>
+        (Pressione F12 para ver os eixos no console)
+    </div>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+
+    <script>
+        let scene, camera, renderer, controllerModel;
+        let gamepadIndex = null;
+        const rotationSpeed = 0.03;
+        const buttonHighlightColor = new THREE.Color(0x00ff00); // Verde para destacar
+        const originalColors = new Map(); // Para armazenar cores originais dos botões
+
+        // --- 1. FUNÇÕES DE INICIALIZAÇÃO DO THREE.JS ---
+
+        function init() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 1.5; // Posição da câmera ajustada para o modelo
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true }); // Alpha para fundo transparente
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            // Luzes para o modelo 3D
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5); // Luz ambiente
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8); // Luz direcional
+            directionalLight.position.set(1, 1, 1).normalize();
+            scene.add(directionalLight);
+
+            // Carrega o modelo GLTF do controle
+            const loader = new THREE.GLTFLoader();
+            // AJUSTE ESTE CAMINHO PARA O SEU MODELO!
+            // Ex: './models/ps4_controller/scene.gltf'
+            loader.load(
+                './models/DualShock_4_ps4_controller/scene.gltf', // <-- ATUALIZE ESTE CAMINHO!
+                function (gltf) {
+                    controllerModel = gltf.scene;
+                    scene.add(controllerModel);
+
+                    // Ajusta a escala e rotação inicial do modelo, se necessário
+                    controllerModel.scale.set(0.5, 0.5, 0.5); // Pode ser necessário ajustar
+                    controllerModel.rotation.y = Math.PI * 0.5; // Rotação inicial para melhor visualização
+
+                    // Armazena as cores originais dos meshes (para destacar botões)
+                    controllerModel.traverse((child) => {
+                        if (child.isMesh) {
+                            originalColors.set(child.name, child.material.color.clone());
+                        }
+                    });
+
+                    console.log("Modelo 3D carregado!", controllerModel);
+                },
+                undefined, // Função de progresso (opcional)
+                function (error) {
+                    console.error('Erro ao carregar o modelo GLTF:', error);
+                }
+            );
+
+            animate();
+        }
+
+        // --- 2. FUNÇÕES GAMEPAD API ---
+
+        window.addEventListener("gamepadconnected", (e) => {
+            console.log("Gamepad conectado no índice %d: %s",
+                e.gamepad.index, e.gamepad.id);
+            gamepadIndex = e.gamepad.index;
+            document.getElementById('info').innerText = `Controle conectado: ${e.gamepad.id}`;
+        });
+
+        window.addEventListener("gamepaddisconnected", (e) => {
+            console.log("Gamepad desconectado do índice %d: %s",
+                e.gamepad.index, e.gamepad.id);
+            gamepadIndex = null;
+            document.getElementById('info').innerText = 'Controle desconectado. Conecte seu controle de PS4.';
+        });
+
+        function handleGamepad() {
+            if (gamepadIndex !== null && controllerModel) {
+                const gamepad = navigator.getGamepads()[gamepadIndex];
+                const deadzone = 0.15; // Aumentei a deadzone para evitar rotação indesejada
+                const gyroRotationMultiplier = 1.0; // Multiplicador para o giroscópio
+
+                if (gamepad) {
+                    // --- Mapeamento para Rotação do Modelo (Analógicos ou Giroscópio) ---
+                    let rotateX = 0;
+                    let rotateY = 0;
+
+                    // PRIORIZE O GIROSCÓPIO SE OS EIXOS CORRETOS FOREM IDENTIFICADOS E ATIVOS
+                    // Descomente e ajuste os índices dos eixos abaixo com base no seu teste do DS4Windows!
+                    // console.log("Eixos:", gamepad.axes); // Descomente para debug
+                    const GIRO_EIXO_X = gamepad.axes[6] || 0; // Exemplo: Eixo 6 para inclinação
+                    const GIRO_EIXO_Y = gamepad.axes[7] || 0; // Exemplo: Eixo 7 para rotação
+                    
+                    if (Math.abs(GIRO_EIXO_X) > deadzone || Math.abs(GIRO_EIXO_Y) > deadzone) {
+                        rotateX = -GIRO_EIXO_X * gyroRotationMultiplier; // Sinal invertido pode ser necessário
+                        rotateY = GIRO_EIXO_Y * gyroRotationMultiplier;
+                    } else {
+                        // FALLBACK: Se o giroscópio não estiver ativo, use os analógicos (Right Stick)
+                        rotateX = gamepad.axes[3]; // Right Stick Y
+                        rotateY = gamepad.axes[2]; // Right Stick X
+                    }
+                    
+                    if (Math.abs(rotateX) > deadzone) {
+                        controllerModel.rotation.x += rotateX * rotationSpeed;
+                    }
+                    if (Math.abs(rotateY) > deadzone) {
+                        controllerModel.rotation.y += rotateY * rotationSpeed;
+                    }
+
+                    // --- Mapeamento para Botões (Destacar no Modelo) ---
+                    // Os nomes dos meshes dependem do seu modelo GLTF.
+                    // Você precisará inspecionar o modelo (usando um visualizador GLTF ou console.log(controllerModel))
+                    // para encontrar os nomes corretos dos meshes para os botões.
+                    
+                    highlightButton('X_button_mesh_name', gamepad.buttons[0].pressed); // Botão X (0)
+                    highlightButton('Circle_button_mesh_name', gamepad.buttons[1].pressed); // Botão Círculo (1)
+                    highlightButton('Square_button_mesh_name', gamepad.buttons[2].pressed); // Botão Quadrado (2)
+                    highlightButton('Triangle_button_mesh_name', gamepad.buttons[3].pressed); // Botão Triângulo (3)
+
+                    // Mapeamento dos gatilhos (L2/R2)
+                    // gamepad.buttons[6].value (L2), gamepad.buttons[7].value (R2)
+                    // gamepad.buttons[6].pressed (L2), gamepad.buttons[7].pressed (R2)
+
+                    // Exemplo: Mover um analógico no modelo (se o modelo tiver meshes separados para eles)
+                    // let leftStickX = gamepad.axes[0];
+                    // let leftStickY = gamepad.axes[1];
+                    // if (controllerModel.getObjectByName('LeftStick_Mesh_Name')) {
+                    //     controllerModel.getObjectByName('LeftStick_Mesh_Name').position.x = leftStickX * 0.05;
+                    //     controllerModel.getObjectByName('LeftStick_Mesh_Name').position.y = -leftStickY * 0.05;
+                    // }
+                }
+            }
+        }
+
+        // Função auxiliar para destacar botões
+        function highlightButton(meshName, isPressed) {
+            const buttonMesh = controllerModel.getObjectByName(meshName);
+            if (buttonMesh && buttonMesh.isMesh) {
+                if (!originalColors.has(meshName)) {
+                    originalColors.set(meshName, buttonMesh.material.color.clone());
+                }
+
+                if (isPressed) {
+                    buttonMesh.material.color.copy(buttonHighlightColor);
+                } else {
+                    buttonMesh.material.color.copy(originalColors.get(meshName));
+                }
+            }
+        }
+
+        // --- 3. LOOP DE ANIMAÇÃO ---
+
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            handleGamepad();
+
+            renderer.render(scene, camera);
+        }
+
+        window.onload = init;
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
